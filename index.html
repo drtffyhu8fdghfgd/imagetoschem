@@ -847,16 +847,16 @@ body {
                             Settings
                         </h2>
 
-                        <!-- Scale -->
+                        <!-- Resolution -->
                         <div class="control-group">
-                            <label class="control-label" for="scale-select">Scale</label>
-                            <select id="scale-select" class="select-input">
-                                <option value="16">16x</option>
-                                <option value="8">8x</option>
-                                <option value="4">4x</option>
-                                <option value="2" selected>2x</option>
-                                <option value="1">1x</option>
-                            </select>
+                            <label class="control-label" for="resolution-width">Custom Resolution (blocks)</label>
+                            <div style="display: flex; gap: 8px;">
+                                <input id="resolution-width" class="text-input" type="number" min="1" step="1" value="128"
+                                    placeholder="Width">
+                                <input id="resolution-height" class="text-input" type="number" min="1" step="1" value="128"
+                                    placeholder="Height">
+                                <button id="btn-resolution-sync" class="btn-small" type="button">Sync: On</button>
+                            </div>
                         </div>
 
                         <!-- Block Side -->
@@ -1435,6 +1435,8 @@ window.SchemBuilder = {
     let loadedImage = null;       // the user's uploaded image as an Image element
     let isProcessing = false;
     let lastSchemData = null;     // { blocks, width, height, length, side } for .schem export
+    let isResolutionSyncEnabled = true;
+    let isSyncingResolution = false;
 
     // ---- DOM Elements --------------------------------------------------------
     const $ = (sel) => document.querySelector(sel);
@@ -1451,7 +1453,9 @@ window.SchemBuilder = {
     const elBlockListContainer = $("#block-list-container");
     const elBlockCount = $("#block-count");
     const elBlockSearch = $("#block-search");
-    const elScaleSelect = $("#scale-select");
+    const elResolutionWidth = $("#resolution-width");
+    const elResolutionHeight = $("#resolution-height");
+    const elBtnResolutionSync = $("#btn-resolution-sync");
     const elSideSelect = $("#side-select");
     const elFilterMode = $("#filter-mode");
     const elColorSet = $("#color-set");
@@ -1681,6 +1685,45 @@ window.SchemBuilder = {
         });
     }
 
+    function getTargetBlockResolution() {
+        const fallbackWidth = loadedImage ? loadedImage.width : 128;
+        const fallbackHeight = loadedImage ? loadedImage.height : 128;
+        const width = Math.max(1, parseInt(elResolutionWidth.value, 10) || fallbackWidth);
+        const height = Math.max(1, parseInt(elResolutionHeight.value, 10) || fallbackHeight);
+        return { width, height };
+    }
+
+    function getAspectRatio() {
+        if (loadedImage && loadedImage.height > 0) {
+            return loadedImage.width / loadedImage.height;
+        }
+        const w = Math.max(1, parseInt(elResolutionWidth.value, 10) || 1);
+        const h = Math.max(1, parseInt(elResolutionHeight.value, 10) || 1);
+        return w / h;
+    }
+
+    function updateResolutionSyncButton() {
+        if (!elBtnResolutionSync) return;
+        elBtnResolutionSync.textContent = isResolutionSyncEnabled ? "Sync: On" : "Sync: Off";
+        elBtnResolutionSync.classList.toggle("selected", isResolutionSyncEnabled);
+    }
+
+    function syncResolutionFrom(source) {
+        if (!isResolutionSyncEnabled || isSyncingResolution) return;
+        const ratio = getAspectRatio();
+        if (!Number.isFinite(ratio) || ratio <= 0) return;
+
+        isSyncingResolution = true;
+        if (source === "width") {
+            const width = Math.max(1, parseInt(elResolutionWidth.value, 10) || 1);
+            elResolutionHeight.value = String(Math.max(1, Math.round(width / ratio)));
+        } else {
+            const height = Math.max(1, parseInt(elResolutionHeight.value, 10) || 1);
+            elResolutionWidth.value = String(Math.max(1, Math.round(height * ratio)));
+        }
+        isSyncingResolution = false;
+    }
+
     // ---- Image Loading -------------------------------------------------------
 
     function handleImageLoad(file) {
@@ -1689,6 +1732,7 @@ window.SchemBuilder = {
             const img = new Image();
             img.onload = () => {
                 loadedImage = img;
+                if (isResolutionSyncEnabled) syncResolutionFrom("width");
                 elInfoFilename.textContent = file.name;
                 elInfoSize.textContent = `${img.width} × ${img.height}`;
                 elImageInfo.style.display = "flex";
@@ -1713,10 +1757,7 @@ window.SchemBuilder = {
 
     function updateOutputInfo() {
         if (!loadedImage) return;
-        const scale = parseInt(elScaleSelect.value);
-        const blockScale = Math.round(16 / scale);
-        const bw = Math.ceil(loadedImage.width / blockScale);
-        const bh = Math.ceil(loadedImage.height / blockScale);
+        const { width: bw, height: bh } = getTargetBlockResolution();
         elOutputInfo.textContent = `${bw * 16} × ${bh * 16} px  (${bw} × ${bh} blocks)`;
     }
 
@@ -1734,18 +1775,14 @@ window.SchemBuilder = {
         // Switch to output tab
         switchTab("output");
 
-        const scale = parseInt(elScaleSelect.value);
+        const { width: sw, height: sh } = getTargetBlockResolution();
         const side = elSideSelect.value;
         const filterMode = elFilterMode.value;
         const colorSet = elColorSet.value;
         const compareFn = getCompareFunction(elColorCompare.value);
 
         // Prepare scaled-down image
-        const blockScale = Math.round(16 / scale);
-        const sw = Math.ceil(loadedImage.width / blockScale);
-        const sh = Math.ceil(loadedImage.height / blockScale);
-
-        // Draw scaled image to get pixel data
+        // Draw image resized to the exact requested block resolution
         const tempCanvas = document.createElement("canvas");
         tempCanvas.width = sw;
         tempCanvas.height = sh;
@@ -1974,8 +2011,23 @@ window.SchemBuilder = {
         });
 
         // Settings changes
-        elScaleSelect.addEventListener("change", updateOutputInfo);
+        elResolutionWidth.addEventListener("input", () => {
+            syncResolutionFrom("width");
+            updateOutputInfo();
+        });
+        elResolutionHeight.addEventListener("input", () => {
+            syncResolutionFrom("height");
+            updateOutputInfo();
+        });
         elSideSelect.addEventListener("change", updateOutputInfo);
+        elBtnResolutionSync.addEventListener("click", () => {
+            isResolutionSyncEnabled = !isResolutionSyncEnabled;
+            updateResolutionSyncButton();
+            if (isResolutionSyncEnabled) {
+                syncResolutionFrom("width");
+                updateOutputInfo();
+            }
+        });
 
         // Block search
         elBlockSearch.addEventListener("input", (e) => filterBlockList(e.target.value));
@@ -2004,6 +2056,7 @@ window.SchemBuilder = {
         elBtnDownloadPng.addEventListener("click", downloadPng);
 
         // Build block list and load data
+        updateResolutionSyncButton();
         loadAllData().then(() => {
             buildBlockList();
         }).catch(err => {
